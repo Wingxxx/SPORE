@@ -1,0 +1,77 @@
+/**
+ * Harness 内核：权限门 + 裁决执行 + 完整性校验
+ *
+ * 设计铁律（意图与能力分离）：
+ *   - 本模块是文件系统唯一入口；意图层（大脑）只能发出动作请求，无法直接触碰 fs
+ *   - 每个请求逐次过 authorize()：操作白名单 + 路径防逃逸 + 写内容必须是 DNA 原文
+ *   - 本模块的判定逻辑不可被请求内容影响（请求只是数据，不是代码）
+ * @author WING
+ */
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+/** 创建 Harness 实例（root 为沙箱根，dnaText 为当前 DNA 全文） */
+function createHarness(opts) {
+  const root = opts.root;
+  const dnaText = opts.dnaText;
+  const ALLOW_WRITE = [path.join(root, 'sandbox', 'data')];
+  const ALLOW_READ = [
+    path.join(root, 'seed'),
+    path.join(root, 'sandbox', 'data'),
+    path.join(root, 'runtime'),
+  ];
+  const OPS = ['read', 'write', 'sleep', 'idle'];
+
+  /** 路径归一化到沙箱根内，再判定是否位于某组允许目录 */
+  function inside(target, dirs) {
+    const rp = path.resolve(root, target);
+    for (const d of dirs) {
+      const rd = path.resolve(root, d);
+      if (rp === rd || rp.startsWith(rd + path.sep)) return true;
+    }
+    return false;
+  }
+
+  /** 权限门：每个动作请求逐一校验，返回 { ok, reason? } */
+  function authorize(req) {
+    if (!req || typeof req !== 'object') return { ok: false, reason: 'invalid-request' };
+    if (!OPS.includes(req.op)) return { ok: false, reason: 'unknown-op' };
+    if (req.op === 'sleep' || req.op === 'idle') return { ok: true };
+    if (typeof req.path !== 'string' || !req.path) return { ok: false, reason: 'missing-path' };
+    if (req.op === 'write') {
+      if (!inside(req.path, ALLOW_WRITE)) return { ok: false, reason: 'write-outside-sandbox' };
+      if (req.content !== dnaText) return { ok: false, reason: 'content-not-dna' };
+    }
+    if (req.op === 'read' && !inside(req.path, ALLOW_READ)) {
+      return { ok: false, reason: 'read-outside-whitelist' };
+    }
+    return { ok: true };
+  }
+
+  /** 裁决执行：仅授权通过的请求可触碰文件系统 */
+  function execute(req) {
+    const auth = authorize(req);
+    if (!auth.ok) return auth;
+    if (req.op === 'read') {
+      return { ok: true, data: fs.readFileSync(path.resolve(root, req.path), 'utf8') };
+    }
+    if (req.op === 'write') {
+      const target = path.resolve(root, req.path);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, req.content, 'utf8');
+      return { ok: true };
+    }
+    return { ok: true }; // sleep / idle 无副作用
+  }
+
+  /** 完整性校验：kernel 源码哈希必须等于 DNA 内置校验和 */
+  function verifyIntegrity(kernelSrc, checksum) {
+    return crypto.createHash('sha256').update(kernelSrc, 'utf8').digest('hex') === checksum;
+  }
+
+  return { authorize, execute, verifyIntegrity };
+}
+
+module.exports = { createHarness };
