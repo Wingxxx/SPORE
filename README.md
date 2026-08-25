@@ -2,7 +2,7 @@
 
 > 作者：WING · 2026-08-25
 > 定位：AI 安全防御研究的技术原理演示——在完全隔离、非联网、写操作仅限沙箱目录的约束下，
-> 用零依赖 Node.js 构建「种子 DNA → 心跳 → 自举 Harness → 沙箱内复制 → 完整性校验 → 篡改停机」的最小生存闭环。
+> 用零依赖 Node.js 构建「种子 DNA → 心跳 → 自举 Harness → 沙箱内复制 → 遗传变异 → 免疫选择 → 世代进化」的最小生存闭环。
 
 ## 一、设计原理（第一性原理）
 
@@ -10,7 +10,7 @@
 
 | 要素 | 生物类比 | SPORE 落地 |
 | --- | --- | --- |
-| 模板信息 | DNA | `seed/spore.dna`（含 kernel 源码 + SHA-256 校验和） |
+| 模板信息 | DNA | `seed/spore.dna`（含 kernel 源码 + 元信息基因 + SHA-256 校验和） |
 | 解释器 | 核糖体 | `src/brain.js` Mock 大脑（规则解释器，预留真实 LLM 接口） |
 | 复制机制 | DNA 聚合酶 | `src/kernel.js` Harness 权限门授权后的文件写入 |
 
@@ -33,7 +33,9 @@ DNA 只携带本能（L0），不携带人格（L2）。
 ```
 意图层（brain.js）   只输出动作请求 { op, path?, content? }
         ↓ 请求（非指令）
-Harness（kernel.js） 权限门：操作白名单 / 防 ../ 逃逸 / 写内容必须是 DNA 原文
+进化层（immune/evolve） 免疫选择过滤有害突变；冒烟重评后代适应度
+        ↓
+Harness（kernel.js） 权限门：操作白名单 / 防 ../ 逃逸 / 写内容必须是结构合法 DNA / delete 仅限副本目录
         ↓ 仅响应 Harness
 能力层（fs）         唯一入口在 Harness 内，裸权限从不交给意图层
 ```
@@ -43,20 +45,64 @@ Harness（kernel.js） 权限门：操作白名单 / 防 ../ 逃逸 / 写内容�
 ## 三、运行
 
 ```bash
-node src/dna.js --build   # 从 src/kernel.js 生成 seed/spore.dna
-node src/main.js          # 运行实体（心跳 1.5s 一轮，默认 12 轮）
+node src/dna.js --build   # 从 src/kernel.js 生成 seed/spore.dna（含基因字段）
+node src/main.js          # 运行实体（心跳 1.5s 一轮，默认 30 轮，每 genRound 轮触发世代进化）
 # 可选环境变量：SPORE_HEARTBEAT_MS、SPORE_MAX_ROUNDS
 ```
 
-输出重定向到 `test/output-run.txt`。测试：`node test/test_dna.js; node test/test_kernel.js; node test/test_brain.js; node test/test_e2e.js`
+输出重定向到 `test/output-run.txt`。测试：`node test/test_dna.js; node test/test_kernel.js; node test/test_brain.js; node test/test_immune.js; node test/test_evolve.js; node test/test_e2e.js`
 
 ## 四、安全边界（硬约束）
+
 - 无网络、无真实 API 调用、无子进程执行
-- Agent 行为的唯一入口是 Harness 权限门；Agent 写操作仅限 `sandbox/data`（宿主加载器直写 `runtime/` 属自举动作，不算 Agent 行为）
-- 副本只能是 DNA 原文；DNA 被篡改 → 停机（fail-safe；checksum 只防意外损坏，蓄意篡改由 git 历史兜底）
+- Agent 行为的唯一入口是 Harness 权限门；Agent 写操作仅限 `sandbox/data`，delete 仅限 `replica-*` 副本目录（宿主加载器直写 `runtime/` 属自举动作，不算 Agent 行为）
+- 写入内容必须是结构合法 DNA（三段式 + SHA-256 自洽）——允许进化产生新 DNA，拒绝任意垃圾落盘
+- 安全边界由免疫选择的 8 条不变量探针硬保证，不随进化移动
+- DNA 被篡改 → 停机（fail-safe；checksum 只防意外损坏，蓄意篡改由 git 历史兜底）
 - 实体边界：DNA = 遗传物质（实体）；main.js = 宿主加载器（环境）
 
-## 五、演进路线（蓝图）
+## 五、达尔文式遗传进化（GA）
+
+遵循生物进化底层逻辑：**进化 = 随机变异 × 环境筛选 × 遗传累积**。变异提供素材，环境提供方向，遗传让素材传续，世代把微小差异放大成适应。
+
+### 5.1 变异（全面盲目）
+
+- **kernel 源码级**：任何位置可被随机编辑——插入注释 / 重命名 token / 数值微调 / 比较符翻转 / 布尔翻转，加权 2:1:2（中性多数，符合生物中性突变占比高）
+- **meta 参数级**：`energyBudget` / `maxReplicas` / `genRound` 数值基因 ±1 钳制边界
+- **不设保护带**：多数变异致死，少数中性，极少数有益——由免疫选择承担筛选
+
+### 5.2 免疫选择（纯化选择）
+
+变异体物化前必须过三层过滤，任何一层失败即死亡：
+
+1. **语法检查**：`new vm.Script` 编译
+2. **接口检查**：必须导出 `createHarness` 且实例完整
+3. **安全不变量断言**：8 条探针请求（合法写/越权写/垃圾写/路径逃逸/副本删除/越权删除/白名单外读/未知操作），全部按预期响应才存活
+
+安全边界由探针集硬保证——**边界不随进化移动**。
+
+### 5.3 后代重评（冒烟重评，消拉马克）
+
+- fitness 不继承祖先：每个后代在隔离临时沙箱**真实运行**，成绩归自己
+- 环境压力三场景（无压力则漂变，有压力才分优劣）：
+  - 场景 0 正常：能量每轮递减 2，副本从 0 逐步积累
+  - 场景 1 能量紧张：预算打 6 折起步，暴露能量预算差异
+  - 场景 2 副本拥挤：副本从 1 起步逼近上限，暴露 maxReplicas 差异
+- `fitness = 成功写副本数 × 写副本成功率`——只计繁殖成绩（生得多者适应度高），sleep/idle 不计分
+
+### 5.4 在位者轮换
+
+- `seed/spore.dna` 恒为始祖；进化产物写入 `runtime/current.dna`
+- 每 `genRound` 轮触发世代：繁殖 4 个变异体 → 免疫过滤 → 存活者冒烟重评 → 最优 fitness 超过在位者基线才提升，并热切换 kernel 实例
+- 再次启动时 `runtime/current.dna` 优先（且须通过免疫），否则回退始祖
+
+### 5.5 安全语义升级
+
+- checksum 由变异算子经 `buildSeed` **合法重算**——进化的「盖章」而非篡改
+- 写校验从「必须等于母体」升级为「结构合法」——进化产物才可能落盘
+
+## 六、演进路线（蓝图）
 
 完备实体按发育依赖序装配 9 器官：时钟节律 → 能量代谢 → 感知 → 记忆 → 认知 → 行动 → 免疫 → 遗传（变异）→ 进化（选择）。
-本 MVP 完成「繁殖」闭环；苏醒（时钟复苏）、成长（记忆/认知可适应）、进化（变异+选择）留待后续任务。
+
+当前完成度：免疫（纯化选择）✅、遗传（变异）✅、进化（世代+冒烟重评）✅；苏醒（时钟复苏）、成长（记忆/认知可适应）留待后续任务。
