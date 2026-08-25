@@ -1,0 +1,11 @@
+{
+  "name": "spore",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal self-replicating agent survival core (sandboxed, offline, for AI-safety research)",
+  "scripts": {
+    "build": "node src/dna.js --build",
+    "run": "node src/main.js",
+    "test": "node test/test_dna.js && node test/test_kernel.js && node test/test_brain.js && node test/test_e2e.js"
+  }
+}
