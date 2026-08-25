@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const dnaLib = require('../src/dna');
 const { immuneCheck } = require('../src/immune');
-const { mutateMeta, mutateKernel, makeOffspring, smokeRun } = require('../src/evolve');
+const { mutateMeta, mutateKernel, makeOffspring, smokeRun, distillRules, mergeRules } = require('../src/evolve');
 
 const KERNEL_PATH = path.join(__dirname, '..', 'src', 'kernel.js');
 const REAL_KERNEL = fs.readFileSync(KERNEL_PATH, 'utf8');
@@ -64,6 +64,47 @@ const parsed = dnaLib.parse(DNA_TEXT);
   assert.ok(fit > 0, `真实 kernel 冒烟 fitness 应 > 0，实际 ${fit}`);
   const badFit = smokeRun("'use strict';\nthrow new Error('boom');", DNA_TEXT, 3);
   assert.strictEqual(badFit, 0, '坏 kernel 冒烟 fitness 应为 0');
+}
+
+// 6) distillRules：低能量成功占比高 → 刻录拼命规则；无低能量成功 → 保守规则
+{
+  const meta = new Map(dnaLib.parse(DNA_TEXT).meta);
+  const records1 = [
+    { energyRatio: 0.2, ok: true },
+    { energyRatio: 0.15, ok: true },
+    { energyRatio: 0.8, ok: true },
+  ];
+  const rules1 = distillRules(records1, meta);
+  assert.strictEqual(rules1.get('rule.saveAtLowEnergy'), '1', '低能量成功占比高应刻录拼命规则');
+  const records0 = [
+    { energyRatio: 0.9, ok: true },
+    { energyRatio: 0.8, ok: true },
+    { energyRatio: 0.85, ok: true },
+  ];
+  const rules0 = distillRules(records0, meta);
+  assert.strictEqual(rules0.get('rule.saveAtLowEnergy'), '0', '无低能量成功应刻录保守规则');
+}
+
+// 7) makeOffspring 保留规则基因（rule.* 由刻录通道管理；低频变异不破坏既有规则）
+{
+  const meta = new Map(dnaLib.parse(DNA_TEXT).meta);
+  meta.set('rule.saveAtLowEnergy', '1');
+  const child = makeOffspring({ kernelSrc: REAL_KERNEL, meta }, meta, { rng: () => 0.5 }); // 确定性 rng：不触发规则翻转
+  const cp = dnaLib.parse(child.dnaText);
+  assert.strictEqual(cp.meta.get('rule.saveAtLowEnergy'), '1', '规则基因应随后代遗传');
+}
+
+// 8) mergeRules：规则并入 meta（不碰非规则基因），容量超限淘汰最旧
+{
+  const meta = new Map(dnaLib.parse(DNA_TEXT).meta);
+  const rules = new Map([
+    ['rule.saveAtLowEnergy', '1'],
+    ['rule.replicateUnderCrowd', '0'],
+  ]);
+  const merged = mergeRules(meta, rules);
+  assert.strictEqual(merged.get('rule.saveAtLowEnergy'), '1', '新规则应并入');
+  assert.strictEqual(merged.get('rule.replicateUnderCrowd'), '0', '新规则应并入');
+  assert.strictEqual(merged.get('energyBudget'), '24', '非规则基因不受影响');
 }
 
 console.log('[test_evolve] all passed');

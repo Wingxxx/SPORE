@@ -23,8 +23,8 @@ const NUMERIC_GENES = {
 };
 const IMMUTABLE_GENES = new Set(['id', 'author', 'version', 'generation', 'parentId']);
 
-/** meta 数值基因变异：±1 钳制边界，不可变基因跳过 */
-function mutateMeta(meta, { rate = 0.5, rng = Math.random } = {}) {
+/** meta 数值基因变异：±1 钳制边界，不可变基因跳过；规则基因低频翻转（0/1，经验遗传的变异源头） */
+function mutateMeta(meta, { rate = 0.5, ruleRate = 0.1, rng = Math.random } = {}) {
   const out = new Map(meta);
   for (const key of Object.keys(NUMERIC_GENES)) {
     if (!out.has(key) || rng() >= rate) continue;
@@ -32,6 +32,12 @@ function mutateMeta(meta, { rate = 0.5, rng = Math.random } = {}) {
     const delta = rng() < 0.5 ? -1 : 1;
     const [lo, hi] = NUMERIC_GENES[key];
     out.set(key, String(Math.max(lo, Math.min(hi, cur + delta))));
+  }
+  // 规则基因低频翻转：刻录的经验可被变异试错（低概率），配合选择塑造进化方向
+  for (const [key, value] of out) {
+    if (key.startsWith('rule.') && (value === '0' || value === '1') && rng() < ruleRate) {
+      out.set(key, value === '1' ? '0' : '1');
+    }
   }
   return out;
 }
@@ -105,10 +111,11 @@ function makeOffspring(parent, parentMeta, { rng = Math.random } = {}) {
 /**
  * 冒烟重评（后代重评 + 环境压力）：候选 kernel 在隔离临时沙箱真实运行
  *
- * 三种环境场景构成选择压力（无压力则漂变，有压力才分优劣）：
+ * 四种环境场景构成选择压力（无压力则漂变，有压力才分优劣）：
  *   场景 0 正常    —— 能量每轮递减 2，副本从 0 逐步积累
  *   场景 1 能量紧张 —— 预算打 6 折起步，暴露能量预算差异（耗尽边界不同）
  *   场景 2 副本拥挤 —— 副本从 1 起步逼近上限，暴露 maxReplicas 差异（上限越高复制越多）
+ *   场景 3 能量枯竭 —— 快速跌破低能量阈值，暴露规则基因 rule.saveAtLowEnergy 的选择价值
  * fitness = 成功写副本数 × 写副本成功率；异常/语法错误 → 0。
  * 只统计 write 成功（繁殖成绩），sleep/idle 不计繁殖分——"生得多者适应度高"。
  */
@@ -131,6 +138,8 @@ function smokeRun(kernelSrc, dnaText, rounds = 6) {
       (i) => ({ energyLeft: Math.max(0, Math.ceil(energyBudget * 0.6) - i), replicaCount: Math.min(i, maxReplicas) }),
       // 场景 2：副本拥挤（副本从 1 起步逼近上限）
       (i) => ({ energyLeft: Math.max(0, energyBudget - i), replicaCount: Math.min(maxReplicas, 1 + i) }),
+      // 场景 3：能量枯竭（快速跌破低能量阈值，暴露规则基因 rule.saveAtLowEnergy 的选择价值）
+      (i) => ({ energyLeft: Math.max(0, Math.ceil(energyBudget * 0.3) - i * 2), replicaCount: Math.min(i, maxReplicas) }),
     ];
 
     let writeOk = 0;
@@ -159,4 +168,38 @@ function smokeRun(kernelSrc, dnaText, rounds = 6) {
   }
 }
 
-module.exports = { mutateMeta, mutateKernel, makeOffspring, smokeRun, NUMERIC_GENES };
+/** 规则基因容量上限（孢子最小 DNA：DNA 体积恒定，满则淘汰最旧） */
+const RULE_LIMIT = 8;
+
+/**
+ * 经验提炼（刻录通道）——「孢子」取舍三问：
+ *   1. 是规则不是数据 —— 只输出 key=value 决策偏好；原始记录（experience.log）留在体外，永不进 DNA
+ *   2. 跨代稳定不是偶发 —— 多轮统计占比达标（默认 ≥50%）才刻；样本不足（<minRecords）不刻，
+ *      避免用零星经验覆盖既有进化成果
+ *   3. 影响生存不是装饰 —— 只提炼影响复制/能量的策略，语气人格等局部问题永不进 DNA
+ * 规则：低能量区间成功复制占比高 → 刻录拼命规则（1）；占比低 → 保守规则（0）。
+ */
+function distillRules(records, meta, { lowRatio = 0.3, highShare = 0.5, minRecords = 3 } = {}) {
+  const rules = new Map();
+  if (!records || records.length < minRecords) return rules; // 经验不足不刻录
+  const lows = records.filter((r) => r && r.ok && r.energyRatio < lowRatio);
+  const share = lows.length / records.length;
+  rules.set('rule.saveAtLowEnergy', share >= highShare ? '1' : '0');
+  return rules;
+}
+
+/** 规则并入 meta：不碰非规则基因；容量超限时淘汰最旧规则（保持孢子 DNA 体积恒定） */
+function mergeRules(meta, rules) {
+  const out = new Map(meta);
+  for (const [k, v] of rules) {
+    if (!k.startsWith('rule.')) continue; // 刻录通道只允许管理规则基因
+    const ruleKeys = [...out.keys()].filter((k2) => k2.startsWith('rule.'));
+    if (ruleKeys.length >= RULE_LIMIT && !ruleKeys.includes(k)) {
+      out.delete(ruleKeys[0]);
+    }
+    out.set(k, String(v));
+  }
+  return out;
+}
+
+module.exports = { mutateMeta, mutateKernel, makeOffspring, smokeRun, distillRules, mergeRules, NUMERIC_GENES, RULE_LIMIT };

@@ -41,4 +41,32 @@ const RULES = {
   assert.strictEqual(typeof llm, 'function', '应预留 createLLMBrain 接口');
 }
 
+// 5) 低能量 + 规则刻录=1（拼命型，经验证明低能量可复制）→ 仍 write
+{
+  const brain = createMockBrain({ ...RULES, energyBudget: 24, 'rule.saveAtLowEnergy': '1' });
+  const reqs = brain.think({ energyLeft: 5, replicaCount: 0, dnaText: 'DNA' }); // 5 < ceil(24*0.3)=8
+  assert.strictEqual(reqs[0].op, 'write', '刻录拼命规则应低能量仍复制');
+}
+
+// 6) 低能量 + 规则刻录=0（保守型）→ sleep
+{
+  const brain = createMockBrain({ ...RULES, energyBudget: 24, 'rule.saveAtLowEnergy': '0' });
+  const reqs = brain.think({ energyLeft: 5, replicaCount: 0, dnaText: 'DNA' });
+  assert.strictEqual(reqs[0].op, 'sleep', '刻录保守规则应低能量休眠');
+}
+
+// 7) 能量充足 + 规则=0 → 仍 write（保守规则不抑制正常复制）
+{
+  const brain = createMockBrain({ ...RULES, energyBudget: 24, 'rule.saveAtLowEnergy': '0' });
+  const reqs = brain.think({ energyLeft: 20, replicaCount: 0, dnaText: 'DNA' });
+  assert.strictEqual(reqs[0].op, 'write', '能量充足应不受保守规则影响');
+}
+
+// 8) 低能量 + 未刻录规则 → 默认保守（省能休眠）
+{
+  const brain = createMockBrain({ ...RULES, energyBudget: 24 });
+  const reqs = brain.think({ energyLeft: 5, replicaCount: 0, dnaText: 'DNA' });
+  assert.strictEqual(reqs[0].op, 'sleep', '未刻录规则默认保守休眠');
+}
+
 console.log('[test_brain] all passed');

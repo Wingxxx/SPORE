@@ -3,13 +3,13 @@
 ## 项目定位
 - 路径：`d:\Wing_D\desktop\tmp\SPORE`，远端 `https://github.com/Wingxxx/SPORE.git`
 - 目标：AI 安全防御研究的最小自我繁殖 Agent 实体演示——零依赖 Node.js，完全隔离、非联网、写操作仅限沙箱目录
-- 已完成：MVP「繁殖闭环」+ GA「达尔文式进化」（遗传变异 + 免疫选择 + 世代轮换），commit 已推送
+- 已完成：MVP「繁殖闭环」+ GA「达尔文式进化」（遗传变异 + 免疫选择 + 世代轮换）+ 硅基经验刻录（规则基因，软/硬遗忘），commit 已推送
 
 ## 架构（三层 + 边界）
 - **意图层** `src/brain.js`：Mock 大脑（规则解释器），只输出动作请求 `{ op, path?, content? }`；`createLLMBrain` 为真实 LLM 接口占位（沙箱禁网）
 - **进化层**：
   - `src/immune.js` 免疫选择（纯化选择）：语法（vm.Script）/ 接口 / 8 条安全不变量探针，变异体物化前过滤
-  - `src/evolve.js` GA 算子：`mutateMeta`（数值基因 ±1）/ `mutateKernel`（5 种编辑算子全盲变异）/ `makeOffspring`（后代合成+checksum 重算）/ `smokeRun`（冒烟重评，三场景环境压力）
+  - `src/evolve.js` GA 算子：`mutateMeta`（数值基因 ±1 + 规则基因低频翻转）/ `mutateKernel`（5 种编辑算子全盲变异）/ `makeOffspring`（后代合成+checksum 重算）/ `smokeRun`（冒烟重评，四场景环境压力含能量枯竭）/ `distillRules`（经验→规则提炼，孢子取舍三问）/ `mergeRules`（规则并入 meta，容量上限 RULE_LIMIT=8 恒定 DNA 体积）
 - **Harness** `src/kernel.js`：Agent 行为唯一文件系统入口；权限门 = 操作白名单 + 防 `../` 逃逸 + 写内容须结构合法 DNA（`isValidDna` 内联校验）+ `delete` 仅限 `replica-*` 副本目录；`verifyIntegrity` = SHA-256 比对
 - **宿主加载器** `src/main.js`：读在位者 DNA（`runtime/current.dna` 优先，否则 seed）→ 校验（不符即 exit 1）→ 自举物化 kernel → 心跳循环（记账/探测/思考/裁决/副本验证 + 每 genRound 轮 `runGeneration` 世代进化 + 热切换）
 - **宿主/实体分离**（grill 定案）：实体 = DNA；main.js = 宿主环境，直写 `runtime/` 属自举动作，不算 Agent 行为
@@ -33,9 +33,12 @@
 - **变异全面盲目**：kernel 源码 + meta 参数均可变，不设保护带；变异算子加权中性 2/5 + 行为 1/5 + 致死 2/5
 - **免疫选择 = 纯化选择**：三层过滤（语法/接口/8 条安全不变量探针），安全边界由探针集硬保证，不随进化移动
 - **后代重评（达尔文式，非拉马克式）**：fitness = 候选自身冒烟成绩（成功写副本数 × 写成功率），不继承祖先表现
-- **环境压力**：smokeRun 三场景（正常/能量紧张/副本拥挤），meta 基因（energyBudget/maxReplicas）真实参与 fitness——无压力则漂变
+- **环境压力**：smokeRun 四场景（正常/能量紧张/副本拥挤/能量枯竭），meta 基因（energyBudget/maxReplicas）与规则基因真实参与 fitness——无压力则漂变
 - **在位者轮换**：seed 恒为始祖，进化产物写 `runtime/current.dna`（最优 fitness 超基线才提升）；启动时 current.dna 优先且须过免疫
 - **安全语义**：checksum 由变异算子合法重算（盖章非篡改）；写校验升级为结构合法 DNA
+- **经验刻录（硅基 Baldwin，分层刻录）**：硅基无 Weismann 屏障，经验可写回 DNA，但刻录通道只管理 `rule.*` 规则基因；底层数值/kernel 变异仍盲。刻录 = 达尔文式，不破坏后代重评：规则基因参与低频变异→遗传→冒烟选择，拼命型 fitness 13.5 > 保守型 9.375 实证进化奖励经验
+- **孢子取舍三问**（决定经验是否进 DNA）：① 是规则不是数据（只输出 key=value 决策偏好，原始记录永不进 DNA）② 跨代稳定不是偶发（统计占比 ≥50% 且样本 ≥minRecords=3 才刻，防零星经验覆盖进化成果）③ 影响生存不是装饰（只提炼影响复制/能量的策略，语气人格永不进 DNA）
+- **遗忘机制（记忆不无限增长）**：软遗忘 = `MAX_EXPERIENCE=200` 上限裁最旧（时间遗忘）；硬遗忘 = 规则刻录完成后清空 experience.log（孢子不携带尸体）；DNA 体积恒定（RULE_LIMIT=8，满则淘汰最旧规则）
 
 ## 代码约定
 - 所有源码中文专业注释，禁止比喻化/口语化
@@ -52,20 +55,20 @@ node test/test_dna.js     # 分模块测试；全量 6 个：test_dna / test_ker
 ```
 gitignore：`node_modules/ runtime/ sandbox/ test/output-*.txt`
 
-## 当前状态（对照 9 器官蓝图，完成度约 70%）
+## 当前状态（对照 9 器官蓝图，完成度约 75%）
 | 器官 | 状态 |
 | --- | --- |
 | 时钟节律 | ⚠️ 进程内心跳，无休眠→复苏触发 |
 | 能量代谢 | ⚠️ 单向消耗，无能量获取 |
 | 感知器官 | ⚠️ 仅副本计数 |
-| 记忆器官 | ❌ |
-| 认知器官 | ⚠️ 确定性规则，不可适应 |
+| 记忆器官 | ⚠️ 经验刻录通道（experience.log → distillRules → 规则基因；软遗忘 200 上限 + 硬遗忘清空） |
+| 认知器官 | ⚠️ 确定性规则，可被规则基因调控（rule.saveAtLowEnergy 影响低能量决策） |
 | 行动器官 | ✅ 复制/休眠/idle/删除副本 |
 | 免疫器官 | ✅ 免疫选择（纯化选择，三层过滤） |
-| 遗传器官 | ✅ 变异（kernel 源码级 + meta 基因级） |
-| 进化器官 | ✅ 世代循环 + 冒烟重评 + 在位者轮换 |
+| 遗传器官 | ✅ 变异（kernel 源码级 + meta 数值级 + 规则基因低频翻转） |
+| 进化器官 | ✅ 世代循环 + 冒烟重评（四场景）+ 在位者轮换 + 经验刻录闭环 |
 
-待推进（按依赖序）：苏醒线（休眠复苏）→ 成长线（记忆/认知可适应）→ 完备线（感知扩展/能量获取/真实 LLM）。架构骨架已定，后续填器官不攻结构。
+待推进（按依赖序）：苏醒线（休眠复苏）→ 成长线（感知扩展、更多规则基因、认知可适应）→ 完备线（能量获取/真实 LLM）。架构骨架已定，后续填器官不攻结构。
 
 ## 安全边界（硬约束）
 无网络、无真实 API 调用、无子进程执行；Agent 写操作仅限 `sandbox/data`，delete 仅限 `replica-*`；写入内容须结构合法 DNA；安全边界由免疫探针硬保证，不随进化移动。

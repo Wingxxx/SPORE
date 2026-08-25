@@ -18,16 +18,38 @@ const dnaLib = require('./dna');
 const { createHarness } = require('./kernel');
 const { createMockBrain } = require('./brain');
 const { immuneCheck } = require('./immune');
-const { makeOffspring, smokeRun } = require('./evolve');
+const { makeOffspring, smokeRun, distillRules, mergeRules } = require('./evolve');
 
 const ROOT = path.resolve(__dirname, '..');
 const SEED_PATH = path.join(ROOT, 'seed', 'spore.dna');
 const CURRENT_PATH = path.join(ROOT, 'runtime', 'current.dna');
 const LEDGER_PATH = path.join(ROOT, 'runtime', 'ledger.json');
 const KERNEL_PATH = path.join(ROOT, 'runtime', 'kernel.js');
+const EXPERIENCE_PATH = path.join(ROOT, 'runtime', 'experience.log');
+const MAX_EXPERIENCE = 200; // 经验记忆容量上限：超限遗忘最旧（时间遗忘，记忆不无限增长）
 const HEARTBEAT_MS = Number(process.env.SPORE_HEARTBEAT_MS || 1500);
 const MAX_ROUNDS = Number(process.env.SPORE_MAX_ROUNDS || 30);
 const MUTANTS_PER_GEN = 4;
+
+/** 追加一条经验记录（环境快照）；超限裁掉最旧（软遗忘） */
+function appendExperience(logPath, record) {
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  const lines = fs.existsSync(logPath)
+    ? fs.readFileSync(logPath, 'utf8').trim().split(/\r?\n/).filter(Boolean)
+    : [];
+  lines.push(JSON.stringify(record));
+  if (lines.length > MAX_EXPERIENCE) lines.splice(0, lines.length - MAX_EXPERIENCE);
+  fs.writeFileSync(logPath, lines.join('\n') + '\n', 'utf8');
+}
+
+/** 读取经验记录（跳过损坏行） */
+function loadExperience(logPath) {
+  if (!fs.existsSync(logPath)) return [];
+  return fs.readFileSync(logPath, 'utf8')
+    .trim().split(/\r?\n/).filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch (e) { return null; } })
+    .filter(Boolean);
+}
 
 /** 单轮「思考 + 裁决执行」：大脑输出请求，Harness 逐请求执行（导出供测试） */
 function runOnce({ kernel, brain, env }) {
@@ -139,11 +161,16 @@ function main() {
 
     for (const r of results) {
       console.log(`[spore] round=${round} energy=${ledger.energyLeft} op=${r.req.op} -> ${r.res.ok ? 'ok' : r.res.reason}`);
-      if (r.req.op === 'write' && r.res.ok) {
-        // 副本完整性验证：复制出的 DNA 校验自洽
-        const copyText = fs.readFileSync(path.join(ROOT, r.req.path), 'utf8');
-        const ok = dnaLib.verify(dnaLib.parse(copyText).kernelSrc, dnaLib.parse(copyText).checksum);
-        console.log(`[spore] 副本完整性验证: ${ok ? 'PASS' : 'FAIL'} (${r.req.path})`);
+      if (r.req.op === 'write') {
+        // 记录经验快照（软遗忘：超限裁最旧；原始记录提炼成规则后即焚）
+        const budget = Number(dna.meta.get('energyBudget') || 24);
+        appendExperience(EXPERIENCE_PATH, { energyRatio: budget > 0 ? ledger.energyLeft / budget : 0, ok: r.res.ok });
+        if (r.res.ok) {
+          // 副本完整性验证：复制出的 DNA 校验自洽
+          const copyText = fs.readFileSync(path.join(ROOT, r.req.path), 'utf8');
+          const ok = dnaLib.verify(dnaLib.parse(copyText).kernelSrc, dnaLib.parse(copyText).checksum);
+          console.log(`[spore] 副本完整性验证: ${ok ? 'PASS' : 'FAIL'} (${r.req.path})`);
+        }
       }
       if (r.req.op === 'sleep') {
         console.log('[spore] 能量耗尽，进入休眠（演示结束）');
@@ -154,6 +181,19 @@ function main() {
 
     // 世代挂接：每 genRound 轮触发一次
     if (round % genRound === 0) {
+      // 经验提炼 → 规则刻录（孢子取舍三问；规则基因随后代遗传、并接受冒烟选择）
+      const records = loadExperience(EXPERIENCE_PATH);
+      const rules = distillRules(records, dna.meta);
+      const newMeta = mergeRules(dna.meta, rules);
+      if (rules.size && newMeta.get('rule.saveAtLowEnergy') !== dna.meta.get('rule.saveAtLowEnergy')) {
+        dna.meta = newMeta;
+        const newText = dnaLib.buildSeed([...newMeta].map(([k, v]) => `${k}=${v}`).join('\n'), dna.kernelSrc);
+        dnaText = newText;
+        fs.mkdirSync(path.dirname(CURRENT_PATH), { recursive: true });
+        fs.writeFileSync(CURRENT_PATH, newText, 'utf8');
+        fs.writeFileSync(EXPERIENCE_PATH, '', 'utf8'); // 原始记录提炼后遗忘（孢子不携带尸体）
+        console.log(`[spore] 经验刻录: rule.saveAtLowEnergy=${newMeta.get('rule.saveAtLowEnergy')}，原始记录已遗忘`);
+      }
       const report = runGeneration({ kernel, dnaText, meta: dna.meta, ledger, currentPath: CURRENT_PATH, root: ROOT });
       if (report.promoted) {
         // 热切换：新在位者接管后续轮次（清 require 缓存 → 重新物化实例 → 同步 dna/meta）
@@ -178,4 +218,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { runOnce, runGeneration, main };
+module.exports = { runOnce, runGeneration, appendExperience, loadExperience, main };

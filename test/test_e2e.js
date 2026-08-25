@@ -10,7 +10,7 @@ const path = require('path');
 const dnaLib = require('../src/dna');
 const { createHarness } = require('../src/kernel');
 const { createMockBrain } = require('../src/brain');
-const { runOnce, runGeneration } = require('../src/main');
+const { runOnce, runGeneration, appendExperience, loadExperience } = require('../src/main');
 
 // 构造临时沙箱 + 临时 DNA（真实 kernel 源码，校验自洽）
 function makeSandbox() {
@@ -68,6 +68,26 @@ function makeSandbox() {
   const brain = createMockBrain({ targetDir: 'sandbox/data', maxReplicas: 5 });
   const { results } = runOnce({ kernel: harness, brain, env: { energyLeft: 0, replicaCount: 0, dnaText } });
   assert.strictEqual(results[0].req.op, 'sleep', '能量耗尽应休眠');
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 4) 经验刻录闭环：记录经验 → 提炼规则 → 刻入 DNA（孢子取舍：规则进 DNA，记录留体外）
+{
+  const { root, dnaText } = makeSandbox();
+  const logPath = path.join(root, 'runtime', 'experience.log');
+  appendExperience(logPath, { energyRatio: 0.2, ok: true });
+  appendExperience(logPath, { energyRatio: 0.15, ok: true });
+  appendExperience(logPath, { energyRatio: 0.8, ok: true });
+  const records = loadExperience(logPath);
+  assert.strictEqual(records.length, 3, '应读回 3 条经验');
+  const parsed = dnaLib.parse(dnaText);
+  const rules = require('../src/evolve').distillRules(records, parsed.meta);
+  assert.strictEqual(rules.get('rule.saveAtLowEnergy'), '1', '低能量成功占比高应刻录拼命规则');
+  const merged = require('../src/evolve').mergeRules(parsed.meta, rules);
+  const newText = dnaLib.buildSeed([...merged].map(([k, v]) => `${k}=${v}`).join('\n'), parsed.kernelSrc);
+  const cp = dnaLib.parse(newText);
+  assert.strictEqual(cp.meta.get('rule.saveAtLowEnergy'), '1', '规则应刻入 DNA 随遗传');
+  assert.strictEqual(cp.meta.get('energyBudget'), '24', '非规则基因不受影响');
   fs.rmSync(root, { recursive: true, force: true });
 }
 
