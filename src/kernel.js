@@ -2,9 +2,11 @@
  * Harness 内核：权限门 + 裁决执行 + 完整性校验
  *
  * 设计铁律（意图与能力分离）：
- *   - 本模块是文件系统唯一入口；意图层（大脑）只能发出动作请求，无法直接触碰 fs
- *   - 每个请求逐次过 authorize()：操作白名单 + 路径防逃逸 + 写内容必须是 DNA 原文
- *   - 本模块的判定逻辑不可被请求内容影响（请求只是数据，不是代码）
+ *   - 本模块是文件系统唯一入口；意图层（大脑/进化器官）只能发出动作请求
+ *   - write 校验 = 结构合法 DNA（三段式 + kernel 段 SHA-256 自洽），允许进化产生新 DNA
+ *   - delete 仅允许删除 sandbox/data 下的 replica-* 副本目录（种群淘汰）
+ *   - 判定逻辑不可被请求内容影响（请求只是数据，不是代码）
+ * 自包含约束：本文件物化到 runtime/kernel.js 后独立运行，只依赖 Node 内置模块。
  * @author WING
  */
 'use strict';
@@ -12,7 +14,37 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-/** 创建 Harness 实例（root 为沙箱根，dnaText 为当前 DNA 全文） */
+const SEG_META = '[SPORE-DNA]';
+const SEG_KERNEL = '[KERNEL]';
+const SEG_CHECKSUM = '[CHECKSUM]';
+
+/**
+ * 结构校验：文本是否为合法 DNA（三段式存在 + kernel 段哈希与校验和自洽）
+ * 解析逻辑与 src/dna.js 的 parse 严格一致，保证校验与生成互为镜像。
+ */
+function isValidDna(text) {
+  if (typeof text !== 'string' || !text) return false;
+  const lines = text.split(/\r?\n/);
+  let section = '';
+  let sawMeta = false;
+  let sawKernel = false;
+  const kernelLines = [];
+  let checksum = '';
+  for (const line of lines) {
+    if (line === SEG_META) { section = 'meta'; sawMeta = true; continue; }
+    if (line === SEG_KERNEL) { section = 'kernel'; sawKernel = true; continue; }
+    if (line === SEG_CHECKSUM) { section = 'checksum'; continue; }
+    if (section === 'kernel') kernelLines.push(line);
+    else if (section === 'checksum' && line.trim()) checksum = line.trim();
+  }
+  if (!sawMeta || !sawKernel || !checksum) return false;
+  // 去掉 [KERNEL] 与 [CHECKSUM] 间的分隔空行（与 dna.parse 一致）
+  if (kernelLines.length && kernelLines[kernelLines.length - 1] === '') kernelLines.pop();
+  const digest = crypto.createHash('sha256').update(kernelLines.join('\n'), 'utf8').digest('hex');
+  return digest === checksum;
+}
+
+/** 创建 Harness 实例（root 为沙箱根，dnaText 为当前在位者 DNA 全文） */
 function createHarness(opts) {
   const root = opts.root;
   const dnaText = opts.dnaText;
@@ -22,7 +54,7 @@ function createHarness(opts) {
     path.join(root, 'sandbox', 'data'),
     path.join(root, 'runtime'),
   ];
-  const OPS = ['read', 'write', 'sleep', 'idle'];
+  const OPS = ['read', 'write', 'delete', 'sleep', 'idle'];
 
   /** 路径归一化到沙箱根内，再判定是否位于某组允许目录 */
   function inside(target, dirs) {
@@ -42,7 +74,12 @@ function createHarness(opts) {
     if (typeof req.path !== 'string' || !req.path) return { ok: false, reason: 'missing-path' };
     if (req.op === 'write') {
       if (!inside(req.path, ALLOW_WRITE)) return { ok: false, reason: 'write-outside-sandbox' };
-      if (req.content !== dnaText) return { ok: false, reason: 'content-not-dna' };
+      if (!isValidDna(req.content)) return { ok: false, reason: 'content-not-valid-dna' };
+    }
+    if (req.op === 'delete') {
+      if (!inside(req.path, ALLOW_WRITE)) return { ok: false, reason: 'delete-outside-sandbox' };
+      const base = path.basename(path.resolve(root, req.path));
+      if (!base.startsWith('replica-')) return { ok: false, reason: 'delete-not-replica' };
     }
     if (req.op === 'read' && !inside(req.path, ALLOW_READ)) {
       return { ok: false, reason: 'read-outside-whitelist' };
@@ -63,6 +100,10 @@ function createHarness(opts) {
       fs.writeFileSync(target, req.content, 'utf8');
       return { ok: true };
     }
+    if (req.op === 'delete') {
+      fs.rmSync(path.resolve(root, req.path), { recursive: true, force: true });
+      return { ok: true };
+    }
     return { ok: true }; // sleep / idle 无副作用
   }
 
@@ -74,4 +115,4 @@ function createHarness(opts) {
   return { authorize, execute, verifyIntegrity };
 }
 
-module.exports = { createHarness };
+module.exports = { createHarness, isValidDna };
