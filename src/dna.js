@@ -72,8 +72,11 @@ if (require.main === module && process.argv.includes('--build')) {
     'id=spore-001',
     'version=1',
     'author=WING',
-    'energyBudget=8',
-    'maxReplicas=3',
+    'generation=0',
+    'parentId=root',
+    'energyBudget=24',
+    'maxReplicas=5',
+    'genRound=6',
     'targetDir=sandbox/data',
     'haltOnMismatch=true',
   ].join('\n');
